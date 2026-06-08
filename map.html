@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>《夏一晨》世界地图</title>
+<style>
+  body { margin: 0; background: #1a1a0e; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+  canvas { border: 8px solid #5a4a2a; border-radius: 4px; box-shadow: 0 0 40px rgba(0,0,0,0.6); }
+</style>
+</head>
+<body>
+<canvas id="map" width="1400" height="1000"></canvas>
+<script>
+const canvas = document.getElementById('map');
+const ctx = canvas.getContext('2d');
+const W = 1400, H = 1000;
+
+// === 工具函数 ===
+function rand(a, b) { return a + Math.random() * (b - a); }
+
+// 噪声函数
+function noise2D(x, y, seed) {
+  const n = Math.sin(x * 12.9898 + y * 78.233 + seed) * 43758.5453;
+  return n - Math.floor(n);
+}
+
+function smoothNoise(x, y, seed) {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const fx = x - ix, fy = y - iy;
+  const a = noise2D(ix, iy, seed), b = noise2D(ix+1, iy, seed);
+  const c = noise2D(ix, iy+1, seed), d = noise2D(ix+1, iy+1, seed);
+  const u = fx*fx*(3-2*fx), v = fy*fy*(3-2*fy);
+  return a*(1-u)*(1-v) + b*u*(1-v) + c*(1-u)*v + d*u*v;
+}
+
+function fbm(x, y, seed, octaves) {
+  let v = 0, a = 0.5, f = 1;
+  for (let i = 0; i < octaves; i++) {
+    v += a * smoothNoise(x*f, y*f, seed + i*100);
+    a *= 0.5; f *= 2;
+  }
+  return v;
+}
+
+// === 绘制海洋 ===
+function drawOcean() {
+  // 深海渐变
+  const g = ctx.createRadialGradient(W/2, H/2, 100, W/2, H/2, 700);
+  g.addColorStop(0, '#2a4a6a');
+  g.addColorStop(0.5, '#1e3a5a');
+  g.addColorStop(1, '#142a4a');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  // 海浪纹理
+  ctx.globalAlpha = 0.08;
+  for (let y = 0; y < H; y += 3) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    for (let x = 0; x < W; x += 20) {
+      const wy = y + Math.sin(x * 0.02 + y * 0.01) * 4 + fbm(x*0.01, y*0.01, 42, 3) * 8;
+      ctx.lineTo(x, wy);
+    }
+    ctx.strokeStyle = '#5a8ab5';
+    ctx.lineWidth = 0.5;
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+// === 大陆轮廓控制点 ===
+const continentPoints = [
+  // 北方（不规则海岸线）
+  {x:250,y:140},{x:300,y:115},{x:370,y:130},{x:430,y:100},{x:500,y:115},
+  {x:560,y:85},{x:630,y:100},{x:700,y:80},{x:770,y:95},{x:840,y:75},
+  {x:900,y:100},{x:960,y:85},{x:1020,y:110},{x:1070,y:95},
+  // 东海岸
+  {x:1110,y:130},{x:1130,y:180},{x:1140,y:230},{x:1135,y:280},
+  {x:1145,y:330},{x:1130,y:380},{x:1140,y:430},{x:1125,y:480},
+  {x:1110,y:530},{x:1090,y:570},{x:1060,y:610},
+  // 南方海岸
+  {x:1020,y:640},{x:970,y:660},{x:920,y:670},{x:860,y:680},
+  {x:800,y:695},{x:740,y:685},{x:680,y:700},{x:620,y:690},
+  {x:560,y:710},{x:500,y:695},{x:440,y:710},{x:380,y:695},
+  {x:320,y:710},{x:260,y:690},{x:210,y:670},{x:170,y:640},
+  // 西海岸
+  {x:140,y:600},{x:120,y:550},{x:105,y:500},{x:110,y:450},
+  {x:100,y:400},{x:110,y:350},{x:100,y:300},{x:115,y:250},
+  {x:120,y:200},{x:145,y:160},{x:180,y:140}
+];
+
+function catmullRom(p0, p1, p2, p3, t) {
+  const t2 = t*t, t3 = t2*t;
+  return {
+    x: 0.5*((2*p1.x)+(-p0.x+p2.x)*t+(2*p0.x-5*p1.x+4*p2.x-p3.x)*t2+(-p0.x+3*p1.x-3*p2.x+p3.x)*t3),
+    y: 0.5*((2*p1.y)+(-p0.y+p2.y)*t+(2*p0.y-5*p1.y+4*p2.y-p3.y)*t2+(-p0.y+3*p1.y-3*p2.y+p3.y)*t3)
+  };
+}
+
+function getSmoothContour() {
+  const pts = continentPoints;
+  const n = pts.length;
+  const result = [];
+  for (let i = 0; i < n; i++) {
+    const p0 = pts[(i-1+n)%n], p1 = pts[i], p2 = pts[(i+1)%n], p3 = pts[(i+2)%n];
+    for (let t = 0; t < 1; t += 0.05) {
+      result.push(catmullRom(p0, p1, p2, p3, t));
+    }
+  }
+  return result;
+}
+
+function drawContourPath(smooth, offsetX, offsetY) {
+  ctx.beginPath();
+  ctx.moveTo(smooth[0].x + offsetX, smooth[0].y + offsetY);
+  for (let i = 1; i < smooth.length; i++) {
+    ctx.lineTo(smooth[i].x + offsetX, smooth[i].y + offsetY);
+  }
+  ctx.closePath();
+}
+
+// === 绘制大陆 ===
+function drawContinent() {
+  const smooth = getSmoothContour();
+
+  // 阴影
+  ctx.save();
+  drawContourPath(smooth, 4, 4);
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fill();
+  ctx.restore();
+
+  // 主体土地
+  drawContourPath(smooth, 0, 0);
+  const landGrad = ctx.createLinearGradient(200, 100, 1100, 700);
+  landGrad.addColorStop(0, '#4a6a35');
+  landGrad.addColorStop(0.3, '#3d5a2a');
+  landGrad.addColorStop(0.6, '#4a6a35');
+  landGrad.addColorStop(1, '#3a5528');
+  ctx.fillStyle = landGrad;
+  ctx.fill();
+
+  // 土地纹理（噪声）
+  ctx.save();
+  drawContourPath(smooth, 0, 0);
+  ctx.clip();
+  const imgData = ctx.getImageData(0, 0, W, H);
+  const d = imgData.data;
+  for (let y = 0; y < H; y += 2) {
+    for (let x = 0; x < W; x += 2) {
+      const idx = (y*W+x)*4;
+      if (d[idx+3] > 200) {
+        const n = fbm(x*0.015, y*0.015, 7, 4);
+        const v = (n - 0.5) * 30;
+        d[idx] = Math.max(0, Math.min(255, d[idx] + v));
+        d[idx+1] = Math.max(0, Math.min(255, d[idx+1] + v));
+        d[idx+2] = Math.max(0, Math.min(255, d[idx+2] + v));
+      }
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+  ctx.restore();
+
+  // 边缘高光
+  drawContourPath(smooth, 0, 0);
+  ctx.strokeStyle = 'rgba(180,200,160,0.3)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // 海岸线泡沫
+  for (let pass = 0; pass < 3; pass++) {
+    drawContourPath(smooth, (pass-1)*2, (pass-1)*2);
+    ctx.strokeStyle = `rgba(200,220,240,${0.15 - pass*0.04})`;
+    ctx.lineWidth = 3 - pass;
+    ctx.stroke();
+  }
+}
+
+// === 绘制区域 ===
+function drawRegion(points, color, opacity) {
+  ctx.save();
+  const smooth = getSmoothContour();
+  drawContourPath(smooth, 0, 0);
+  ctx.clip();
+
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.globalAlpha = opacity;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+  ctx.closePath();
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([6,4]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+// 区域定义
+const regions = {
+  north: [{x:250,y:140},{x:370,y:130},{x:500,y:115},{x:630,y:100},{x:770,y:95},{x:900,y:100},{x:1020,y:110},{x:1000,y:170},{x:940,y:185},{x:860,y:175},{x:770,y:190},{x:680,y:180},{x:590,y:185},{x:500,y:180},{x:410,y:190},{x:330,y:180},{x:270,y:170}],
+  xuan: [{x:270,y:170},{x:330,y:180},{x:410,y:190},{x:500,y:180},{x:590,y:185},{x:680,y:180},{x:770,y:190},{x:860,y:175},{x:940,y:185},{x:1000,y:170},{x:1010,y:220},{x:990,y:270},{x:960,y:310},{x:900,y:320},{x:820,y:315},{x:740,y:325},{x:660,y:315},{x:580,y:325},{x:500,y:315},{x:420,y:325},{x:340,y:315},{x:280,y:300},{x:260,y:260},{x:255,y:220}],
+  liang: [{x:260,y:260},{x:280,y:300},{x:340,y:315},{x:420,y:325},{x:500,y:315},{x:580,y:325},{x:660,y:315},{x:740,y:325},{x:820,y:315},{x:900,y:320},{x:960,y:310},{x:950,y:370},{x:930,y:420},{x:910,y:460},{x:870,y:480},{x:810,y:475},{x:740,y:485},{x:670,y:475},{x:600,y:485},{x:530,y:475},{x:460,y:485},{x:390,y:475},{x:330,y:460},{x:290,y:430},{x:265,y:390},{x:255,y:350}],
+  qing: [{x:145,y:160},{x:180,y:140},{x:250,y:140},{x:270,y:170},{x:255,y:220},{x:260,y:260},{x:255,y:350},{x:265,y:390},{x:250,y:430},{x:230,y:470},{x:200,y:500},{x:170,y:520},{x:140,y:510},{x:120,y:470},{x:110,y:430},{x:100,y:380},{x:110,y:330},{x:100,y:280},{x:115,y:230},{x:125,y:190}],
+  jin: [{x:1020,y:110},{x:1070,y:95},{x:1110,y:130},{x:1130,y:180},{x:1140,y:230},{x:1135,y:280},{x:1145,y:330},{x:1130,y:380},{x:1140,y:430},{x:1125,y:480},{x:1100,y:510},{x:1070,y:500},{x:1040,y:480},{x:1020,y:450},{x:1010,y:410},{x:1000,y:370},{x:990,y:330},{x:1000,y:280},{x:1010,y:220}],
+  nanjiang: [{x:250,y:430},{x:265,y:390},{x:290,y:430},{x:330,y:460},{x:390,y:475},{x:460,y:485},{x:530,y:475},{x:600,y:485},{x:670,y:475},{x:740,y:485},{x:810,y:475},{x:870,y:480},{x:910,y:460},{x:930,y:500},{x:950,y:540},{x:960,y:580},{x:940,y:620},{x:900,y:650},{x:840,y:670},{x:770,y:680},{x:700,y:690},{x:630,y:680},{x:560,y:700},{x:490,y:685},{x:420,y:700},{x:350,y:685},{x:290,y:670},{x:240,y:640},{x:200,y:600},{x:180,y:560},{x:175,y:520},{x:200,y:500},{x:230,y:470}]
+};
+
+function drawAllRegions() {
+  drawRegion(regions.north, '#7a6a4a', 0.45);
+  drawRegion(regions.xuan, '#4a5a3a', 0.4);
+  drawRegion(regions.liang, '#3a5a2a', 0.35);
+  drawRegion(regions.qing, '#2a5a2a', 0.4);
+  drawRegion(regions.jin, '#4a5a3a', 0.38);
+  drawRegion(regions.nanjiang, '#2a4a1a', 0.4);
+}
+
+// === 山脉 ===
+function drawMountain(x, y, size, angle) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle || 0);
+  const s = size || 1;
+
+  // 山体阴影
+  ctx.beginPath();
+  ctx.moveTo(-12*s, 0);
+  ctx.lineTo(0, -28*s);
+  ctx.lineTo(12*s, 0);
+  ctx.closePath();
+  ctx.fillStyle = '#6a6a5a';
+  ctx.fill();
+
+  // 山体亮面
+  ctx.beginPath();
+  ctx.moveTo(-12*s, 0);
+  ctx.lineTo(0, -28*s);
+  ctx.lineTo(2*s, -5*s);
+  ctx.closePath();
+  ctx.fillStyle = '#8a8a7a';
+  ctx.fill();
+
+  // 雪顶
+  ctx.beginPath();
+  ctx.moveTo(-4*s, -18*s);
+  ctx.lineTo(0, -28*s);
+  ctx.lineTo(4*s, -18*s);
+  ctx.closePath();
+  ctx.fillStyle = '#d0d0c8';
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawMountainRange(points) {
+  for (const p of points) {
+    drawMountain(p.x, p.y, p.s || 1, p.a || 0);
+  }
+}
+
+function drawAllMountains() {
+  // 北方山脉
+  drawMountainRange([
+    {x:380,y:145,s:1.2,a:-0.1},{x:410,y:140,s:1,a:0.05},{x:440,y:148,s:1.3,a:-0.08},
+    {x:600,y:120,s:1.1,a:0.03},{x:630,y:118,s:0.9,a:-0.05},{x:660,y:125,s:1.2,a:0.08},
+    {x:780,y:110,s:1,a:-0.03},{x:810,y:115,s:1.3,a:0.06},{x:840,y:108,s:1.1,a:-0.04},
+  ]);
+  // 金莲国山脉
+  drawMountainRange([
+    {x:1020,y:260,s:1.3,a:-0.1},{x:1050,y:255,s:1.1,a:0.05},{x:1080,y:265,s:1.4,a:-0.08},
+    {x:1030,y:340,s:1,a:0.03},{x:1060,y:335,s:1.2,a:-0.05},{x:1090,y:345,s:1.1,a:0.08},
+  ]);
+  // 南疆山脉
+  drawMountainRange([
+    {x:380,y:640,s:1,a:-0.05},{x:410,y:635,s:1.2,a:0.08},{x:440,y:642,s:0.9,a:-0.03},
+    {x:700,y:650,s:1.1,a:0.05},{x:730,y:645,s:1.3,a:-0.08},{x:760,y:652,s:1,a:0.03},
+  ]);
+}
+
+// === 森林 ===
+function drawTree(x, y, size) {
+  ctx.save();
+  ctx.translate(x, y);
+  const s = size || 1;
+  // 树冠
+  ctx.beginPath();
+  ctx.arc(0, -6*s, 5*s, 0, Math.PI*2);
+  ctx.fillStyle = '#2a5a1a';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(-3*s, -4*s, 4*s, 0, Math.PI*2);
+  ctx.fillStyle = '#3a6a2a';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(3*s, -4*s, 4*s, 0, Math.PI*2);
+  ctx.fillStyle = '#346a24';
+  ctx.fill();
+  // 树干
+  ctx.fillStyle = '#5a3a1a';
+  ctx.fillRect(-1*s, -2*s, 2*s, 5*s);
+  ctx.restore();
+}
+
+function drawForest(x, y, w, h, density) {
+  for (let i = 0; i < density; i++) {
+    const tx = x + rand(0, w), ty = y + rand(0, h);
+    drawTree(tx, ty, rand(0.6, 1.2));
+  }
+}
+
+function drawAllForests() {
+  // 青黎国森林
+  drawForest(140, 300, 80, 120, 25);
+  // 南疆密林
+  drawForest(350, 550, 120, 80, 30);
+  drawForest(550, 560, 100, 70, 25);
+  drawForest(720, 570, 90, 60, 20);
+  // 玄石国北部稀林
+  drawForest(400, 200, 60, 50, 12);
+  drawForest(600, 190, 50, 40, 10);
+}
+
+// === 沙漠 ===
+function drawDesert(x, y, w, h) {
+  ctx.save();
+  const smooth = getSmoothContour();
+  drawContourPath(smooth, 0, 0);
+  ctx.clip();
+
+  const g = ctx.createRadialGradient(x+w/2, y+h/2, 10, x+w/2, y+h/2, Math.max(w,h)/2);
+  g.addColorStop(0, 'rgba(194,165,90,0.5)');
+  g.addColorStop(0.7, 'rgba(180,150,80,0.3)');
+  g.addColorStop(1, 'rgba(160,130,60,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(x, y, w, h);
+
+  // 沙丘纹理
+  ctx.globalAlpha = 0.15;
+  for (let i = 0; i < 15; i++) {
+    const sx = x + rand(0, w), sy = y + rand(0, h);
+    ctx.beginPath();
+    ctx.ellipse(sx, sy, rand(15, 40), rand(5, 12), rand(0, Math.PI), 0, Math.PI*2);
+    ctx.strokeStyle = '#b89a4f';
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+// === 河流 ===
+function drawRiver(points, width, color) {
+  // 河床阴影
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) {
+    const p = points[i], pp = points[i-1];
+    const cx = (pp.x + p.x)/2, cy = (pp.y + p.y)/2;
+    ctx.quadraticCurveTo(pp.x, pp.y, cx, cy);
+  }
+  ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+  ctx.lineWidth = width + 3;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+
+  // 主河流
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) {
+    const p = points[i], pp = points[i-1];
+    const cx = (pp.x + p.x)/2, cy = (pp.y + p.y)/2;
+    ctx.quadraticCurveTo(pp.x, pp.y, cx, cy);
+  }
+  const rg = ctx.createLinearGradient(points[0].x, points[0].y, points[points.length-1].x, points[points.length-1].y);
+  rg.addColorStop(0, '#4a8ab5');
+  rg.addColorStop(0.5, color || '#5a9ac5');
+  rg.addColorStop(1, '#3a7aa5');
+  ctx.strokeStyle = rg;
+  ctx.lineWidth = width;
+  ctx.stroke();
+
+  // 高光
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) {
+    const p = points[i], pp = points[i-1];
+    const cx = (pp.x + p.x)/2, cy = (pp.y + p.y)/2;
+    ctx.quadraticCurveTo(pp.x, pp.y, cx, cy);
+  }
+  ctx.strokeStyle = 'rgba(180,220,255,0.25)';
+  ctx.lineWidth = width * 0.4;
+  ctx.stroke();
+}
+
+function drawAllRivers() {
+  // 主河（南北贯通）
+  drawRiver([
+    {x:450,y:130},{x:460,y:180},{x:475,y:230},{x:490,y:280},
+    {x:510,y:330},{x:530,y:380},{x:550,y:430},{x:570,y:480},
+    {x:590,y:530},{x:610,y:580},{x:630,y:630},{x:650,y:680}
+  ], 5);
+
+  // 支流1
+  drawRiver([
+    {x:490,y:280},{x:530,y:300},{x:570,y:320},{x:610,y:340}
+  ], 3);
+
+  // 支流2
+  drawRiver([
+    {x:550,y:430},{x:590,y:450},{x:630,y:470},{x:670,y:490}
+  ], 3);
+
+  // 西部河流
+  drawRiver([
+    {x:280,y:200},{x:290,y:250},{x:300,y:300},{x:310,y:350},{x:320,y:400}
+  ], 2.5);
+
+  // 东部河流
+  drawRiver([
+    {x:820,y:160},{x:830,y:210},{x:835,y:260},{x:840,y:310},{x:845,y:360}
+  ], 2.5);
+}
+
+// === 沼泽 ===
+function drawSwamp(x, y, w, h) {
+  ctx.save();
+  const smooth = getSmoothContour();
+  drawContourPath(smooth, 0, 0);
+  ctx.clip();
+
+  ctx.fillStyle = 'rgba(30,60,40,0.5)';
+  ctx.fillRect(x, y, w, h);
+
+  // 水面
+  ctx.globalAlpha = 0.3;
+  for (let i = 0; i < 12; i++) {
+    const sx = x + rand(0, w), sy = y + rand(0, h);
+    ctx.beginPath();
+    ctx.ellipse(sx, sy, rand(10, 30), rand(5, 15), 0, 0, Math.PI*2);
+    ctx.fillStyle = '#2a5a4a';
+    ctx.fill();
+  }
+
+  // 芦苇
+  ctx.globalAlpha = 0.6;
+  for (let i = 0; i < 20; i++) {
+    const sx = x + rand(0, w), sy = y + rand(0, h);
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(sx + rand(-3, 3), sy - rand(8, 18));
+    ctx.strokeStyle = '#4a7a3a';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+// === 矿脉 ===
+function drawOreDeposits(x, y, count) {
+  for (let i = 0; i < count; i++) {
+    const ox = x + rand(-30, 30), oy = y + rand(-20, 20);
+    const r = rand(3, 7);
+    ctx.beginPath();
+    ctx.arc(ox, oy, r, 0, Math.PI*2);
+    const g = ctx.createRadialGradient(ox-1, oy-1, 0, ox, oy, r);
+    g.addColorStop(0, '#b0b0b0');
+    g.addColorStop(0.5, '#8a8a8a');
+    g.addColorStop(1, '#5a5a5a');
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+    ctx.lineWidth = 0.5;
+    ctx.stroke();
+  }
+}
+
+// === 药田 ===
+function drawHerbGarden(x, y, r) {
+  ctx.save();
+  const smooth = getSmoothContour();
+  drawContourPath(smooth, 0, 0);
+  ctx.clip();
+
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, 'rgba(80,160,80,0.5)');
+  g.addColorStop(0.7, 'rgba(60,140,60,0.3)');
+  g.addColorStop(1, 'rgba(40,120,40,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI*2);
+  ctx.fill();
+
+  // 小植物
+  for (let i = 0; i < 15; i++) {
+    const px = x + rand(-r*0.8, r*0.8), py = y + rand(-r*0.8, r*0.8);
+    if ((px-x)**2 + (py-y)**2 < r*r*0.7) {
+      ctx.beginPath();
+      ctx.arc(px, py, rand(2, 4), 0, Math.PI*2);
+      ctx.fillStyle = `rgba(${60+rand(0,40)},${120+rand(0,40)},${60+rand(0,30)},0.7)`;
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+// === 城市 ===
+function drawCity(x, y, name, isCapital) {
+  const s = isCapital ? 1.3 : 1;
+
+  // 城墙
+  ctx.fillStyle = '#8b7340';
+  ctx.strokeStyle = '#6b5320';
+  ctx.lineWidth = 1.5;
+  const bw = 14*s, bh = 10*s;
+  ctx.fillRect(x-bw/2, y-bh/2, bw, bh);
+  ctx.strokeRect(x-bw/2, y-bh/2, bw, bh);
+
+  // 城门
+  ctx.fillStyle = '#6b5320';
+  ctx.fillRect(x-3*s, y-bh/2-4*s, 6*s, 4*s);
+
+  if (isCapital) {
+    // 塔楼
+    ctx.fillStyle = '#8b7340';
+    ctx.fillRect(x-2*s, y-bh/2-8*s, 4*s, 4*s);
+    ctx.strokeStyle = '#6b5320';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x-2*s, y-bh/2-8*s, 4*s, 4*s);
+  }
+
+  // 标签阴影
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.font = `bold ${isCapital ? 14 : 12}px "PingFang SC", "Heiti SC", sans-serif`;
+  ctx.textAlign = 'left';
+  ctx.fillText(name, x + bw/2 + 4, y + 5);
+
+  // 标签
+  ctx.fillStyle = isCapital ? '#ffe8b0' : '#ffd88a';
+  ctx.fillText(name, x + bw/2 + 3, y + 4);
+}
+
+// === 宗门 ===
+function drawSect(x, y, name) {
+  // 光环
+  const g = ctx.createRadialGradient(x, y, 0, x, y, 12);
+  g.addColorStop(0, 'rgba(255,215,0,0.4)');
+  g.addColorStop(1, 'rgba(255,215,0,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(x, y, 12, 0, Math.PI*2);
+  ctx.fill();
+
+  // 标记
+  ctx.beginPath();
+  ctx.arc(x, y, 5, 0, Math.PI*2);
+  ctx.fillStyle = '#ffd700';
+  ctx.fill();
+  ctx.strokeStyle = '#b8960a';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // 标签
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.font = '11px "PingFang SC", "Heiti SC", sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(name, x + 10, y + 4);
+  ctx.fillStyle = '#ffd700';
+  ctx.fillText(name, x + 9, y + 3);
+}
+
+// === 故乡标记 ===
+function drawHometown(x, y, name) {
+  ctx.beginPath();
+  ctx.arc(x, y, 4, 0, Math.PI*2);
+  ctx.fillStyle = '#ff8844';
+  ctx.fill();
+  ctx.strokeStyle = '#cc6622';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.font = '10px "PingFang SC", "Heiti SC", sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(name, x + 8, y + 3);
+  ctx.fillStyle = '#ffaa66';
+  ctx.fillText(name, x + 7, y + 2);
+}
+
+// === 国家名称 ===
+function drawCountryLabel(x, y, name, size) {
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.font = `bold ${size}px "PingFang SC", "Heiti SC", sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillText(name, x+2, y+2);
+  ctx.fillStyle = 'rgba(220,240,200,0.7)';
+  ctx.fillText(name, x, y);
+}
+
+// === 图例 ===
+function drawLegend() {
+  const lx = 30, ly = 720;
+  ctx.fillStyle = 'rgba(20,30,15,0.85)';
+  ctx.strokeStyle = '#5a7a4a';
+  ctx.lineWidth = 1;
+  roundRect(lx, ly, 130, 170, 6);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = '#c8a870';
+  ctx.font = 'bold 13px "PingFang SC", "Heiti SC", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('图 例', lx+65, ly+20);
+
+  ctx.textAlign = 'left';
+  const items = [
+    {type:'rect', color:'#8b7340', label:'都城', y:35},
+    {type:'circle', color:'#ffd700', label:'宗门', y:55},
+    {type:'circle', color:'#ff8844', label:'主角故乡', y:75},
+    {type:'tri', color:'#8a8a7a', label:'山脉', y:95},
+    {type:'line', color:'#5a9ac5', label:'河流', y:115},
+    {type:'circle', color:'#8a8a8a', label:'矿脉', y:135},
+    {type:'circle', color:'#50a050', label:'药田', y:155},
+  ];
+
+  for (const it of items) {
+    const iy = ly + it.y;
+    if (it.type === 'rect') {
+      ctx.fillStyle = it.color;
+      ctx.fillRect(lx+12, iy-5, 10, 7);
+      ctx.strokeStyle = '#6b5320';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(lx+12, iy-5, 10, 7);
+    } else if (it.type === 'circle') {
+      ctx.beginPath();
+      ctx.arc(lx+17, iy-1, 4, 0, Math.PI*2);
+      ctx.fillStyle = it.color;
+      ctx.fill();
+    } else if (it.type === 'tri') {
+      ctx.beginPath();
+      ctx.moveTo(lx+12, iy+3);
+      ctx.lineTo(lx+17, iy-7);
+      ctx.lineTo(lx+22, iy+3);
+      ctx.closePath();
+      ctx.fillStyle = it.color;
+      ctx.fill();
+    } else if (it.type === 'line') {
+      ctx.beginPath();
+      ctx.moveTo(lx+12, iy);
+      ctx.lineTo(lx+22, iy);
+      ctx.strokeStyle = it.color;
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+    }
+    ctx.fillStyle = '#ccc';
+    ctx.font = '11px "PingFang SC", "Heiti SC", sans-serif';
+    ctx.fillText(it.label, lx+30, iy+4);
+  }
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.lineTo(x+w-r, y);
+  ctx.quadraticCurveTo(x+w, y, x+w, y+r);
+  ctx.lineTo(x+w, y+h-r);
+  ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  ctx.lineTo(x+r, y+h);
+  ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+  ctx.lineTo(x, y+r);
+  ctx.quadraticCurveTo(x, y, x+r, y);
+  ctx.closePath();
+}
+
+// === 标题 ===
+function drawTitle() {
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.font = 'bold 18px "PingFang SC", "Heiti SC", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('《夏一晨》世界地图', W/2+2, H-22);
+  ctx.fillStyle = '#c8a870';
+  ctx.fillText('《夏一晨》世界地图', W/2, H-24);
+}
+
+// === 边框 ===
+function drawBorder() {
+  ctx.strokeStyle = '#5a4a2a';
+  ctx.lineWidth = 6;
+  roundRect(3, 3, W-6, H-6, 4);
+  ctx.stroke();
+  ctx.strokeStyle = '#3a2a1a';
+  ctx.lineWidth = 2;
+  roundRect(8, 8, W-16, H-16, 3);
+  ctx.stroke();
+}
+
+// === 绘制岛屿 ===
+function drawIsland(x, y, w, h) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(x, y, w/2, h/2, rand(0, 0.3), 0, Math.PI*2);
+  ctx.fillStyle = '#3a5a2a';
+  ctx.fill();
+  ctx.strokeStyle = '#2a4a1a';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  // 小树
+  for (let i = 0; i < 3; i++) {
+    drawTree(x + rand(-w/3, w/3), y + rand(-h/3, h/3), 0.5);
+  }
+  ctx.restore();
+}
+
+// === 主绘制 ===
+function draw() {
+  drawOcean();
+  drawContinent();
+  drawAllRegions();
+
+  // 地形
+  drawDesert(400, 230, 120, 70);
+  drawSwamp(450, 560, 120, 70);
+  drawHerbGarden(190, 380, 35);
+
+  drawAllRivers();
+  drawAllMountains();
+  drawAllForests();
+
+  // 矿脉
+  drawOreDeposits(520, 225, 8);
+
+  // 岛屿
+  drawIsland(1200, 200, 40, 25);
+  drawIsland(1220, 450, 30, 20);
+  drawIsland(80, 650, 35, 22);
+
+  // 国家名称
+  drawCountryLabel(600, 155, '北方蛮夷', 18);
+  drawCountryLabel(600, 275, '玄石国', 24);
+  drawCountryLabel(580, 430, '梁国', 26);
+  drawCountryLabel(190, 310, '青黎国', 20);
+  drawCountryLabel(1050, 310, '金莲国', 20);
+  drawCountryLabel(580, 560, '南疆国', 20);
+
+  // 城市
+  drawCity(520, 205, '磐城', true);
+  drawCity(550, 400, '川都', true);
+  drawCity(195, 370, '青药城', true);
+  drawCity(1050, 370, '佛光城', true);
+  drawCity(540, 580, '兽王城', true);
+
+  // 宗门
+  drawSect(540, 250, '天阵宗');
+  drawSect(510, 440, '太虚门');
+  drawSect(170, 430, '丹霞谷');
+  drawSect(1030, 420, '金刚寺');
+  drawSect(580, 630, '御灵宗');
+
+  // 桑浦县
+  drawHometown(630, 470, '桑浦县');
+
+  drawLegend();
+  drawTitle();
+  drawBorder();
+}
+
+draw();
+</script>
+</body>
+</html>

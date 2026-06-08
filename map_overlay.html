@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>《夏一晨》世界地图</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1a1a0e; display: flex; flex-direction: column; align-items: center; min-height: 100vh; font-family: "PingFang SC", "Heiti SC", sans-serif; }
+  #wrap { position: relative; margin: 20px; }
+  canvas { display: block; border: 6px solid #5a4a2a; border-radius: 3px; box-shadow: 0 0 40px rgba(0,0,0,0.5); cursor: default; }
+  .info { color: #a89060; font-size: 12px; margin-top: 8px; text-align: center; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="map"></canvas>
+  <div class="info">拖拽标注点可调整位置，位置自动保存到控制台</div>
+</div>
+<script>
+const canvas = document.getElementById('map');
+const ctx = canvas.getContext('2d');
+
+// === 底图 ===
+const bgImg = new Image();
+bgImg.src = '天南大陆地图.jpg';
+bgImg.onload = () => {
+  canvas.width = bgImg.width;
+  canvas.height = bgImg.height;
+  draw();
+};
+bgImg.onerror = () => {
+  // 如果图片加载失败，用纯色背景
+  canvas.width = 1400;
+  canvas.height = 1000;
+  ctx.fillStyle = '#2a3a25';
+  ctx.fillRect(0, 0, 1400, 1000);
+  draw();
+};
+
+// === 标注数据（可拖拽调整）===
+// 根据天南大陆地图的地理特征来放置
+// 天南大陆：北部荒漠/草原，中部平原，西部山脉，东部临海，南部密林
+const labels = {
+  // 国家名称 - 大区域
+  countries: [
+    { id:'north', text:'北方蛮夷', x:680, y:120, size:22, color:'#d4a055' },
+    { id:'xuan',  text:'玄石国',   x:500, y:280, size:28, color:'#b8d4a8' },
+    { id:'liang', text:'梁国',     x:600, y:500, size:30, color:'#c8e4b8' },
+    { id:'qing',  text:'青黎国',   x:200, y:400, size:24, color:'#a8d4a8' },
+    { id:'jin',   text:'金莲国',   x:1000, y:380, size:24, color:'#a8d4a8' },
+    { id:'nan',   text:'南疆国',   x:600, y:720, size:24, color:'#98c498' },
+  ],
+  // 都城
+  capitals: [
+    { id:'pancheng', text:'磐城',   x:500, y:230, capital:true },
+    { id:'chuandu',  text:'川都',   x:600, y:450, capital:true },
+    { id:'qingyao',  text:'青药城', x:200, y:360, capital:true },
+    { id:'foguang',  text:'佛光城', x:1000, y:340, capital:true },
+    { id:'shouwang', text:'兽王城', x:600, y:680, capital:true },
+  ],
+  // 宗门
+  sects: [
+    { id:'tianzhen', text:'天阵宗', x:460, y:260 },
+    { id:'taixu',    text:'太虚门', x:560, y:490 },
+    { id:'danxia',   text:'丹霞谷', x:180, y:440 },
+    { id:'jingang',  text:'金刚寺', x:1020, y:400 },
+    { id:'yuling',   text:'御灵宗', x:620, y:710 },
+  ],
+  // 其他地名
+  places: [
+    { id:'sangpu', text:'桑浦县', x:650, y:530, hometown:true },
+  ]
+};
+
+// 拖拽状态
+let dragging = null;
+let dragType = null;
+let dragOffset = {x:0, y:0};
+
+function hitTest(mx, my) {
+  // 检查宗门
+  for (const s of labels.sects) {
+    if (Math.hypot(mx-s.x, my-s.y) < 15) return {item:s, type:'sect'};
+  }
+  // 检查都城
+  for (const c of labels.capitals) {
+    if (Math.hypot(mx-c.x, my-c.y) < 15) return {item:c, type:'capital'};
+  }
+  // 检查故乡
+  for (const p of labels.places) {
+    if (Math.hypot(mx-p.x, my-p.y) < 12) return {item:p, type:'place'};
+  }
+  // 检查国家标签
+  for (const c of labels.countries) {
+    const tw = ctx.measureText(c.text).width;
+    if (mx > c.x - tw/2 - 10 && mx < c.x + tw/2 + 10 && my > c.y - c.size/2 - 5 && my < c.y + c.size/2 + 5) {
+      return {item:c, type:'country'};
+    }
+  }
+  return null;
+}
+
+canvas.addEventListener('mousedown', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
+  const my = (e.clientY - rect.top) * (canvas.height / rect.height);
+  const hit = hitTest(mx, my);
+  if (hit) {
+    dragging = hit.item;
+    dragType = hit.type;
+    dragOffset = { x: mx - hit.item.x, y: my - hit.item.y };
+    canvas.style.cursor = 'grabbing';
+  }
+});
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
+  const my = (e.clientY - rect.top) * (canvas.height / rect.height);
+  if (dragging) {
+    dragging.x = mx - dragOffset.x;
+    dragging.y = my - dragOffset.y;
+    draw();
+  } else {
+    const hit = hitTest(mx, my);
+    canvas.style.cursor = hit ? 'grab' : 'default';
+  }
+});
+
+canvas.addEventListener('mouseup', () => {
+  if (dragging) {
+    console.log(`[拖拽完成] ${dragging.text}: x=${Math.round(dragging.x)}, y=${Math.round(dragging.y)}`);
+    // 输出所有位置供复制
+    console.log('=== 当前所有标注位置 ===');
+    console.log('countries:', JSON.stringify(labels.countries.map(c=>({id:c.id,text:c.text,x:Math.round(c.x),y:Math.round(c.y)})), null, 2));
+    console.log('capitals:', JSON.stringify(labels.capitals.map(c=>({id:c.id,text:c.text,x:Math.round(c.x),y:Math.round(c.y)})), null, 2));
+    console.log('sects:', JSON.stringify(labels.sects.map(c=>({id:c.id,text:c.text,x:Math.round(c.x),y:Math.round(c.y)})), null, 2));
+    console.log('places:', JSON.stringify(labels.places.map(c=>({id:c.id,text:c.text,x:Math.round(c.x),y:Math.round(c.y)})), null, 2));
+  }
+  dragging = null;
+  dragType = null;
+  canvas.style.cursor = 'default';
+});
+
+// === 绘制 ===
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // 底图
+  if (bgImg.complete && bgImg.naturalWidth > 0) {
+    ctx.drawImage(bgImg, 0, 0, canvas.width, canvas.height);
+    // 半透明覆盖层，让标注更清晰
+    ctx.fillStyle = 'rgba(0,0,0,0.15)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  // 绘制所有标注
+  drawCountries();
+  drawCapitals();
+  drawSects();
+  drawPlaces();
+  drawLegend();
+  drawTitle();
+}
+
+function drawCountries() {
+  for (const c of labels.countries) {
+    ctx.save();
+    // 阴影
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.font = `bold ${c.size}px "PingFang SC", "Heiti SC", "STHeiti", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(c.text, c.x+2, c.y+2);
+    // 主文字
+    ctx.fillStyle = c.color;
+    ctx.globalAlpha = 0.85;
+    ctx.fillText(c.text, c.x, c.y);
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+}
+
+function drawCapitals() {
+  for (const c of labels.capitals) {
+    ctx.save();
+    const s = c.capital ? 1.3 : 1;
+    // 城墙
+    ctx.fillStyle = 'rgba(139,115,64,0.9)';
+    ctx.strokeStyle = 'rgba(107,83,32,0.9)';
+    ctx.lineWidth = 1.5;
+    const bw = 16*s, bh = 12*s;
+    ctx.fillRect(c.x-bw/2, c.y-bh/2, bw, bh);
+    ctx.strokeRect(c.x-bw/2, c.y-bh/2, bw, bh);
+    // 城门
+    ctx.fillStyle = 'rgba(107,83,32,0.9)';
+    ctx.fillRect(c.x-3*s, c.y-bh/2-5*s, 6*s, 5*s);
+    // 塔楼
+    ctx.fillStyle = 'rgba(139,115,64,0.9)';
+    ctx.fillRect(c.x-2.5*s, c.y-bh/2-10*s, 5*s, 5*s);
+    ctx.strokeStyle = 'rgba(107,83,32,0.9)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(c.x-2.5*s, c.y-bh/2-10*s, 5*s, 5*s);
+    // 标签
+    ctx.font = `bold 14px "PingFang SC", "Heiti SC", "STHeiti", sans-serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillText(c.text, c.x + bw/2 + 5, c.y + 2);
+    ctx.fillStyle = '#ffe8b0';
+    ctx.fillText(c.text, c.x + bw/2 + 4, c.y + 1);
+    ctx.restore();
+  }
+}
+
+function drawSects() {
+  for (const s of labels.sects) {
+    ctx.save();
+    // 光环
+    const g = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, 14);
+    g.addColorStop(0, 'rgba(255,215,0,0.5)');
+    g.addColorStop(1, 'rgba(255,215,0,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, 14, 0, Math.PI*2);
+    ctx.fill();
+    // 标记
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, 6, 0, Math.PI*2);
+    ctx.fillStyle = '#ffd700';
+    ctx.fill();
+    ctx.strokeStyle = '#b8960a';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    // 标签
+    ctx.font = '12px "PingFang SC", "Heiti SC", "STHeiti", sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillText(s.text, s.x + 11, s.y + 2);
+    ctx.fillStyle = '#ffd700';
+    ctx.fillText(s.text, s.x + 10, s.y + 1);
+    ctx.restore();
+  }
+}
+
+function drawPlaces() {
+  for (const p of labels.places) {
+    ctx.save();
+    // 点
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 5, 0, Math.PI*2);
+    ctx.fillStyle = '#ff8844';
+    ctx.fill();
+    ctx.strokeStyle = '#cc6622';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    // 标签
+    ctx.font = '11px "PingFang SC", "Heiti SC", "STHeiti", sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillText(p.text, p.x + 9, p.y + 2);
+    ctx.fillStyle = '#ffaa66';
+    ctx.fillText(p.text, p.x + 8, p.y + 1);
+    ctx.restore();
+  }
+}
+
+function drawLegend() {
+  const lx = 30, ly = canvas.height - 200;
+  ctx.save();
+  ctx.fillStyle = 'rgba(15,20,10,0.85)';
+  ctx.strokeStyle = '#5a7a4a';
+  ctx.lineWidth = 1;
+  roundRect(lx, ly, 130, 160, 6);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = '#c8a870';
+  ctx.font = 'bold 13px "PingFang SC", "Heiti SC", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('图 例', lx+65, ly+20);
+
+  ctx.textAlign = 'left';
+  const items = [
+    { draw: () => { ctx.fillStyle='#8b7340'; ctx.fillRect(lx+12, ly+30, 10, 7); ctx.strokeStyle='#6b5320'; ctx.lineWidth=1; ctx.strokeRect(lx+12, ly+30, 10, 7); }, label:'都城' },
+    { draw: () => { ctx.beginPath(); ctx.arc(lx+17, ly+53, 4.5, 0, Math.PI*2); ctx.fillStyle='#ffd700'; ctx.fill(); ctx.strokeStyle='#b8960a'; ctx.lineWidth=1; ctx.stroke(); }, label:'宗门' },
+    { draw: () => { ctx.beginPath(); ctx.arc(lx+17, ly+73, 4, 0, Math.PI*2); ctx.fillStyle='#ff8844'; ctx.fill(); }, label:'主角故乡' },
+  ];
+  for (let i = 0; i < items.length; i++) {
+    items[i].draw();
+    ctx.fillStyle = '#ccc';
+    ctx.font = '11px "PingFang SC", "Heiti SC", sans-serif';
+    ctx.fillText(items[i].label, lx+30, ly + 35 + i*20);
+  }
+  ctx.restore();
+}
+
+function drawTitle() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.font = 'bold 20px "PingFang SC", "Heiti SC", "STHeiti", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText('《夏一晨》世界地图', canvas.width/2+2, canvas.height-28);
+  ctx.fillStyle = '#c8a870';
+  ctx.fillText('《夏一晨》世界地图', canvas.width/2, canvas.height-30);
+  ctx.restore();
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.lineTo(x+w-r, y);
+  ctx.quadraticCurveTo(x+w, y, x+w, y+r);
+  ctx.lineTo(x+w, y+h-r);
+  ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  ctx.lineTo(x+r, y+h);
+  ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+  ctx.lineTo(x, y+r);
+  ctx.quadraticCurveTo(x, y, x+r, y);
+  ctx.closePath();
+}
+</script>
+</body>
+</html>
